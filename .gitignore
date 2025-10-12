@@ -1,0 +1,7 @@
+.vs/
+*.suo
+*.user
+*.vcxproj.user
+x64/
+Debug/
+Release/
