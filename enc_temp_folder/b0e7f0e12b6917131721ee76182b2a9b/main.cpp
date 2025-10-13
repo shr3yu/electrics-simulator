@@ -138,6 +138,8 @@ int main()
         { vec2(0.3f, 0.0f), vec2(0.0f), 5.0, -0.2, 0.02 }   // right, negative
     };
 
+
+
     // render loop
     // -----------
     while (!glfwWindowShouldClose(window))
