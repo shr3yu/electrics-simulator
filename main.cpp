@@ -57,6 +57,23 @@ struct Particle {
 		velocity += acceleration * dt; // v = u + at
 		position += velocity * dt; // s = s0 + vt
     }
+
+	//Add brownian motion to the particle based on its temperature
+    void addBrownianMotion() {
+		//Maxwell Boltzmann relaiton for 2D simualtions: V = sqrt(2 * k * T / m)
+		float k = 1.0f; // Boltzmann constant
+		float temperature = 1.0f; // room temperature in Kelvin
+		float thermalVelcoity = sqrt(2 * k * temperature / (float)mass);
+
+		//Generate a random direction
+        float randX = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
+        float randY = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
+        vec2 randomDir = normalize(vec2(randX, randY));
+
+        float damping = 0.98f; // drag coefficient
+		//Langevin dynamics (v (t+1) = v(t) * damping + randomForce)
+        velocity = (velocity * damping) + (randomDir * thermalVelcoity * 0.1f); // scale down for stability
+    }
 };
 int main()
 {
@@ -134,8 +151,8 @@ int main()
 
     vector<Particle> particles = {
         { vec2(-0.3f, 0.0f), vec2(0.0f), 5.0, -0.2, 0.02 },  // left, positive
-        { vec2(0.3f, 0.0f), vec2(0.0f), 5.0, -0.2, 0.02 },  // right, negative
-        { vec2(0.0f, 0.3f), vec2(0.0f), 5.0, 0.2, 0.02 }
+        { vec2(0.3f, 0.0f), vec2(0.0f), 5.0, 0.2, 0.02 },  // right, negative
+        //{ vec2(0.0f, 0.3f), vec2(0.0f), 5.0, 0.2, 0.02 }
 
     };
 
@@ -155,6 +172,7 @@ int main()
         //Apply forces and update particle positions
         for (Particle& particle : particles) {
             particle.applyForce(particles, dt);
+            particle.addBrownianMotion();
 		}
 
         // collect particle positions into a flat array
