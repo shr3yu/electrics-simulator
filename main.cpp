@@ -43,10 +43,9 @@ struct Particle {
 			float distance = length(difference);
 			distance -= particle.radius + radius; // consider the radius of the particles
 
-			if (distance < 0.01f) continue; // avoid singularity and self-force
-
 			vec2 direction = normalize(difference); // direction from this particle to the other
-			float force_magnitude = (particle.charge * charge) / (distance * distance); // k is assumed to be 1 for simplicity
+            float softened = sqrt(distance * distance + 0.01f * 0.01f);
+			float force_magnitude = (particle.charge * charge) / (softened * softened); // k is assumed to be 1 for simplicity
             // positive force magnitude would be a force vector TOWARDS the particle
             // psitive force is obtained with similarly charged particles, hence invert the force magnitude
 			totalForce += -force_magnitude * direction; // accumulate the forces from all other particles
@@ -135,7 +134,9 @@ int main()
 
     vector<Particle> particles = {
         { vec2(-0.3f, 0.0f), vec2(0.0f), 5.0, -0.2, 0.02 },  // left, positive
-        { vec2(0.3f, 0.0f), vec2(0.0f), 5.0, -0.2, 0.02 }   // right, negative
+        { vec2(0.3f, 0.0f), vec2(0.0f), 5.0, -0.2, 0.02 },  // right, negative
+        { vec2(0.0f, 0.3f), vec2(0.0f), 5.0, 0.2, 0.02 }
+
     };
 
     // render loop
@@ -148,7 +149,7 @@ int main()
 
         // render
         // ------
-        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+        glClearColor(0.125f, 0.141f, 0.141f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         //Apply forces and update particle positions
