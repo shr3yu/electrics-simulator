@@ -41,7 +41,7 @@ struct Particle {
                 // r: distance between the two charges
 			vec2 difference = particle.position - position;
 			float distance = length(difference);
-			distance -= particle.radius + radius; // consider the radius of the particles
+			//distance -= particle.radius + radius; // consider the radius of the particles
 
 			vec2 direction = normalize(difference); // direction from this particle to the other
             float softened = sqrt(distance * distance + 0.01f * 0.01f);
@@ -73,6 +73,42 @@ struct Particle {
         float damping = 0.98f; // drag coefficient
 		//Langevin dynamics (v (t+1) = v(t) * damping + randomForce)
         velocity = (velocity * damping) + (randomDir * thermalVelcoity * 0.1f); // scale down for stability
+    }
+
+        //Add electron drift 
+        void addDrift(int numElectrons) {
+            float n = (float)numElectrons / 1.0f; // assume 1 unit area
+
+            // target drift velocity to the right
+            vec2 drift = vec2(0.5f / n, 0.0f);
+            velocity = mix(velocity, drift, 0.05f); // gently steer toward drift velocity
+        }
+
+    //Generate electron-hole pairs (based on rate which is determine by light intensity)
+    static void carrierGeneration(vector <Particle>& particles, float generationRate, float dt) {
+        if (((float)rand() / RAND_MAX) < generationRate * dt) {
+			//pick a random position near the current particle
+            float randX = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
+            float randY = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
+            vec2 position(randX, randY);
+
+            Particle e = { position + vec2(0.02f, 0.0f), vec2(0.0f), 5.0, -1, 0.02 };
+
+			particles.push_back(e);
+        }
+	}
+
+	//Recombination of electron-hole pairs (based on proximity)
+    static void carrierRecombination(vector <Particle>& particles, float recombinationRate) {
+        //Randomly remove one of the particles (this depends on if the electron dropps an energy level and recombines with a hole- which is a probabilistic behaviour)
+        //For simplicity, we will randomly 1. decide wether or not to remove a particle 2.pick a random particle to remove
+        for (int i = 0; i < particles.size(); ++i) {
+            float chance = ((float)rand() / RAND_MAX);
+            if (chance < recombinationRate * dt) {
+                particles.erase(particles.begin() + i);
+                --i;
+            }
+        }
     }
 };
 int main()
@@ -150,10 +186,9 @@ int main()
     glDeleteShader(fragmentShader);
 
     vector<Particle> particles = {
-        { vec2(-0.3f, 0.0f), vec2(0.0f), 5.0, -0.2, 0.02 },  // left, positive
-        { vec2(0.3f, 0.0f), vec2(0.0f), 5.0, 0.2, 0.02 },  // right, negative
+        { vec2(-0.3f, 0.0f), vec2(0.0f), 5.0, -1.0, 0.02 },  // left, positive
+        //{ vec2(0.3f, 0.0f), vec2(0.0f), 5.0, 1.0, 0.02 },  // right, negative
         //{ vec2(0.0f, 0.3f), vec2(0.0f), 5.0, 0.2, 0.02 }
-
     };
 
     // render loop
@@ -169,11 +204,19 @@ int main()
         glClearColor(0.125f, 0.141f, 0.141f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
+		//carrier generation rate (based on light intensity)
+        Particle::carrierGeneration(particles, 1.0f, dt); // 5 pairs/sec
+		int n = particles.size();
+
         //Apply forces and update particle positions
         for (Particle& particle : particles) {
             particle.applyForce(particles, dt);
             particle.addBrownianMotion();
+            particle.addDrift(n);
+            
 		}
+
+		Particle::carrierRecombination(particles, 0.1f); // recombination radius
 
         // collect particle positions into a flat array
         vector<float> positions;
