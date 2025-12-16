@@ -11,10 +11,6 @@
 
 using namespace std;
 
-// --------------------------------------------------------
-// NO-DEPENDENCY VECTOR MATH HELPERS
-// (Replaces GLM so you don't need to configure libraries)
-// --------------------------------------------------------
 struct vec2 {
     float x, y;
 
@@ -77,15 +73,15 @@ struct Particle {
     vec2 position;
     vec2 velocity;
     float mass;
-    float charge; // -1 for electron, +1 for hole
+    float charge;
 
     // O(1) Update logic per particle
     void update(float electricField, float dt) {
         // 1. Calculate Electric Force: F = q * E
-        // Note: Voltage is potential difference. E = V / Length.
+        // E = V / Length.
         float forceX = (charge * electricField);
 
-        // 2. Acceleration: a = F / m
+        // 2. Acceleration a = F / m
         vec2 acceleration = { forceX / mass, 0.0f };
 
         // 3. Update Velocity with Damping (Scattering)
@@ -202,10 +198,7 @@ int main()
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // ------------------------------------
         // PHYSICS ENGINE (O(N) Complexity)
-        // ------------------------------------
-
         // 1. IV Sweep Logic
         if (!sweepComplete) {
             measurementTimer += 1.0f;
@@ -257,10 +250,8 @@ int main()
             gpuPositions.push_back(0.0f);
         }
 
-        // ------------------------------------
+       
         // RENDER
-        // ------------------------------------
-
         // Update GPU memory
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
         glBufferSubData(GL_ARRAY_BUFFER, 0, gpuPositions.size() * sizeof(float), gpuPositions.data());
