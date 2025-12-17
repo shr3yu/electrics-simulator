@@ -15,9 +15,9 @@
 
 using namespace std;
 
-// --------------------------------------------------------
-// MATH HELPERS
-// --------------------------------------------------------
+// ---------- OPERATIONS ----------
+
+//Operator overloading
 struct vec2 {
     float x, y;
     vec2 operator+(const vec2& other) const { return { x + other.x, y + other.y }; }
@@ -27,21 +27,21 @@ struct vec2 {
     vec2& operator*=(float scalar) { x *= scalar; y *= scalar; return *this; }
 };
 
+// Finding the length of the vector
 float length(const vec2& v) { return std::sqrt(v.x * v.x + v.y * v.y); }
 
+// normalizing vectors (v/|v|)
 vec2 normalize(const vec2& v) {
     float len = length(v);
     if (len == 0.0f) return { 0.0f, 0.0f };
     return { v.x / len, v.y / len };
 }
 
-// --------------------------------------------------------
-// SETTINGS
-// --------------------------------------------------------
+// ---------- GLOBAL VARIABLES ----------
 const unsigned int SCR_WIDTH = 1200; // Wider for UI
 const unsigned int SCR_HEIGHT = 800;
 
-// Simulation Variables (Controlled by UI)
+// Simulation Variables 
 float appliedVoltage = 0.0f;
 float temperature = 2.0f;
 float simulationSpeed = 1.0f;
@@ -67,7 +67,7 @@ struct Particle {
         // 1. STATE TRANSITIONS
         if (!isFree) {
             // Jump to Conduction Band
-            if (randomVal < bandGapChance * temp) {
+            if (randomVal < bandGapChance * temp) { // the probability of an electron jumping to the conduction band increases with temperature
                 isFree = true;
             }
         }
@@ -76,7 +76,7 @@ struct Particle {
             if (randomVal < recombinationRate) {
                 isFree = false;
                 velocity = { 0.0f, 0.0f };
-                homePosition = position;
+                homePosition = position; // falls back to a nearby hole
             }
         }
 
@@ -85,7 +85,7 @@ struct Particle {
             float forceX = electricField;
             vec2 acceleration = { forceX, 0.0f };
             velocity += acceleration * dt;
-            velocity *= damping;
+			velocity *= damping; // electrons constantly lose energy by bumping into atoms (prevents electrons from accelerating indefinitely)
 
             // Thermal Jitter
             float rX = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
@@ -99,8 +99,8 @@ struct Particle {
             float rX = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
             float rY = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
             vec2 vibration = { rX * 0.005f * temp, rY * 0.005f * temp };
-            vec2 pullBack = (homePosition - position) * 0.1f;
-            position += pullBack + vibration;
+			vec2 pullBack = (homePosition - position) * 0.1f; // Theres an electrostatic pull towards the home position (towards lower potential)
+            position += pullBack + vibration; 
         }
 
         // 3. BOUNDARIES
@@ -178,7 +178,7 @@ int main()
     vector<Particle> particles;
     int rows = 30;
     int cols = 50;
-    particles.reserve(rows * cols);
+    particles.reserve(rows * cols); //creates a solid block of material
     for (int i = 0; i < cols; i++) {
         for (int j = 0; j < rows; j++) {
             float x = (float)i / cols * 1.8f - 0.9f;
@@ -202,17 +202,13 @@ int main()
     {
         glfwPollEvents();
 
-        // ------------------------------------
         // IMGUI FRAME START
-        // ------------------------------------
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        // ------------------------------------
         // UI DESIGN
-        // ------------------------------------
-        ImGui::Begin("Lab Controls"); // Create a window called "Lab Controls"
+        ImGui::Begin("Lab Controls");
 
         ImGui::Text("Device Parameters");
         ImGui::SliderFloat("Voltage (V)", &appliedVoltage, 0.0f, 10.0f);
@@ -231,9 +227,8 @@ int main()
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
         ImGui::End();
 
-        // ------------------------------------
         // PHYSICS UPDATE
-        // ------------------------------------
+        
         // Calculate current metric
         measureTimer += 1.0f;
         if (measureTimer > 60.0f) {
@@ -263,9 +258,7 @@ int main()
             gpuData.push_back(p.isFree ? 1.0f : 0.0f);
         }
 
-        // ------------------------------------
         // RENDER
-        // ------------------------------------
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
