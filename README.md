@@ -1,6 +1,9 @@
 # Semiconductor Physics Simulator: Charge Carrier Dynamics
 A real-time, low-level C++ simulation of electron behavior in a semiconductor crystal lattice under varying electromagnetic and thermal conditions.
 
+https://github.com/user-attachments/assets/82f124a5-2192-4ebb-8a93-31b052249b53
+
+
 ## Overview
 This project simulates the microscopic movement of electrons within a semiconductor material. By modeling the transition between the Valence Band and the Conduction Band, the simulator visualizes how temperature and voltage influence electrical conductivity.
 
