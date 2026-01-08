@@ -43,7 +43,7 @@ const unsigned int SCR_HEIGHT = 800;
 
 // Simulation Variables 
 float appliedVoltage = 0.0f;
-float temperature = 2.0f;
+float temperature = 0;
 float simulationSpeed = 1.0f;
 
 // Measurement
@@ -143,7 +143,7 @@ int main()
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "NVIDIA/Apple Demo - Semiconductor Physics", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Semiconductor Physics Simulation", NULL, NULL);
     if (window == NULL) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
@@ -174,11 +174,12 @@ int main()
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
 
-    // Particle Setup
+    // Inital Particle Setup
     vector<Particle> particles;
     int rows = 30;
     int cols = 50;
-    particles.reserve(rows * cols); //creates a solid block of material
+	particles.reserve(rows * cols); //We will be dealing with a fixed number of particles (rows * cols)
+
     for (int i = 0; i < cols; i++) {
         for (int j = 0; j < rows; j++) {
             float x = (float)i / cols * 1.8f - 0.9f;
@@ -257,6 +258,7 @@ int main()
             gpuData.push_back(0.0f);
             gpuData.push_back(p.isFree ? 1.0f : 0.0f);
         }
+
 
         // RENDER
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
