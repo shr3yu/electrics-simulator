@@ -41,10 +41,12 @@ vec2 normalize(const vec2& v) {
 const unsigned int SCR_WIDTH = 1200; // Wider for UI
 const unsigned int SCR_HEIGHT = 800;
 
+
 // Simulation Variables 
 float appliedVoltage = 0.0f;
-float temperature = 0;
+float temperature = 2.0f;
 float simulationSpeed = 1.0f;
+float maxVelocity = 0.3f;  // Saturation velocity (to simulate a limit for electron velocity in silicon)
 
 // Measurement
 int chargeCrossingCount = 0;
@@ -57,7 +59,7 @@ struct Particle {
     vec2 homePosition;
     bool isFree;
 
-    void update(float electricField, float dt, float temp) {
+    void update(float electricField, float dt, float temp, float totalFree) {
         float damping = 0.90f;
         float bandGapChance = 0.002f;
         float recombinationRate = 0.01f;
@@ -67,13 +69,22 @@ struct Particle {
         // 1. STATE TRANSITIONS
         if (!isFree) {
             // Jump to Conduction Band
-            if (randomVal < bandGapChance * temp) { // the probability of an electron jumping to the conduction band increases with temperature
+            const float BAND_GAP = 1.12f;  // Material property (silicon)
+            float kT = temperature * 0.1f;  // Boltzmann factor kT
+            float excitationProb = 0.01f * exp(-BAND_GAP / kT);
+
+            if (randomVal < excitationProb) {
                 isFree = true;
             }
         }
         else {
+
+            //Density - Dependent Recombination ( higher density = more likely to find a hole = faster recombination)
+            float densityFactor = (float)totalFree / 1500.0f;  // Fraction of electrons that are free
+            float adaptiveRecombination = 0.003f * (1.0f + densityFactor * 5.0f);
+
             // Recombination
-            if (randomVal < recombinationRate) {
+            if (randomVal < adaptiveRecombination) {
                 isFree = false;
                 velocity = { 0.0f, 0.0f };
                 homePosition = position; // falls back to a nearby hole
@@ -82,15 +93,25 @@ struct Particle {
 
         // 2. MOVEMENT
         if (isFree) {
+
+            // Ensure that damping / scattering is corelated with temperature
+            float scattering = 0.88f + (0.07f / (1.0f + temperature * 0.3f));
+            velocity *= scattering; // electrons constantly lose energy by bumping into atoms (prevents electrons from accelerating indefinitely)
+
             float forceX = electricField;
             vec2 acceleration = { forceX, 0.0f };
             velocity += acceleration * dt;
-			velocity *= damping; // electrons constantly lose energy by bumping into atoms (prevents electrons from accelerating indefinitely)
 
             // Thermal Jitter
             float rX = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
             float rY = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
             velocity += normalize({ rX, rY }) * (temp * 0.05f);
+
+            // Considering the saturation of electron velocity 
+            float currentSpeed = length(velocity);
+            if (currentSpeed > maxVelocity) {
+                velocity = normalize(velocity) * maxVelocity;
+            }
 
             position += velocity * dt;
         }
@@ -179,7 +200,6 @@ int main()
     int rows = 30;
     int cols = 50;
 	particles.reserve(rows * cols); //We will be dealing with a fixed number of particles (rows * cols)
-
     for (int i = 0; i < cols; i++) {
         for (int j = 0; j < rows; j++) {
             float x = (float)i / cols * 1.8f - 0.9f;
@@ -242,8 +262,13 @@ int main()
         float electricField = appliedVoltage * 0.3f;
         vector<float> gpuData;
 
+        int freeCount = 0;
+        for (const Particle& p : particles) {
+            if (p.isFree) freeCount++;
+        }
+
         for (Particle& p : particles) {
-            p.update(electricField, dt, temperature);
+            p.update(electricField, dt, temperature, freeCount);
 
             if (p.isFree && p.position.x > 1.0f) {
                 p.position.x = -1.0f;
@@ -258,7 +283,6 @@ int main()
             gpuData.push_back(0.0f);
             gpuData.push_back(p.isFree ? 1.0f : 0.0f);
         }
-
 
         // RENDER
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
