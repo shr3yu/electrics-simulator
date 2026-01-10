@@ -78,6 +78,17 @@ float currentMetric = 0.0f;
 float measureTimer = 0.0f;
 const float MEASURE_INTERVAL = 30.0f;
 
+// I-V Curve data
+const int IV_MAX_POINTS = 100;
+float ivVoltages[IV_MAX_POINTS];
+float ivCurrents[IV_MAX_POINTS];
+int ivPointCount = 0;
+bool ivSweepActive = false;
+float ivSweepVoltage = -5.0f;
+float ivSweepStep = 0.2f;
+float ivSettleTime = 0.0f;
+const float IV_SETTLE_DURATION = 0.5f;  // Seconds to wait at each voltage
+
 // ---------- PARTICLE STRUCTURE ----------
 
 struct Particle {
@@ -412,6 +423,145 @@ int main()
 
         ImGui::End();
 
+        // ===== I-V CURVE WINDOW =====
+        ImGui::Begin("I-V Characteristic");
+
+        // Sweep controls
+        if (!ivSweepActive) {
+            if (ImGui::Button("Start I-V Sweep")) {
+                ivSweepActive = true;
+                ivSweepVoltage = -5.0f;
+                ivPointCount = 0;
+                ivSettleTime = 0.0f;
+                appliedVoltage = ivSweepVoltage;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear Data")) {
+                ivPointCount = 0;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Point")) {
+                // Manually add current point
+                if (ivPointCount < IV_MAX_POINTS) {
+                    ivVoltages[ivPointCount] = appliedVoltage;
+                    ivCurrents[ivPointCount] = currentMetric;
+                    ivPointCount++;
+                }
+            }
+        }
+        else {
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Sweeping: %.1f V", ivSweepVoltage);
+            ImGui::SameLine();
+            if (ImGui::Button("Stop Sweep")) {
+                ivSweepActive = false;
+            }
+        }
+
+        ImGui::SliderFloat("Voltage Step", &ivSweepStep, 0.1f, 1.0f);
+        ImGui::Text("Data Points: %d / %d", ivPointCount, IV_MAX_POINTS);
+
+        // Plot the I-V curve
+        if (ivPointCount > 0) {
+            ImGui::Separator();
+            ImGui::Text("I-V Curve (Current vs Voltage)");
+
+            // Find min/max for scaling
+            float minI = ivCurrents[0], maxI = ivCurrents[0];
+            float minV = ivVoltages[0], maxV = ivVoltages[0];
+            for (int i = 0; i < ivPointCount; i++) {
+                if (ivCurrents[i] < minI) minI = ivCurrents[i];
+                if (ivCurrents[i] > maxI) maxI = ivCurrents[i];
+                if (ivVoltages[i] < minV) minV = ivVoltages[i];
+                if (ivVoltages[i] > maxV) maxV = ivVoltages[i];
+            }
+
+            // Add padding
+            float iRange = maxI - minI;
+            if (iRange < 1.0f) iRange = 1.0f;
+            minI -= iRange * 0.1f;
+            maxI += iRange * 0.1f;
+
+            // Draw plot area
+            ImVec2 plotSize(350, 200);
+            ImVec2 plotPos = ImGui::GetCursorScreenPos();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+            // Background
+            drawList->AddRectFilled(plotPos,
+                ImVec2(plotPos.x + plotSize.x, plotPos.y + plotSize.y),
+                IM_COL32(30, 30, 40, 255));
+
+            // Grid lines
+            drawList->AddLine(
+                ImVec2(plotPos.x, plotPos.y + plotSize.y / 2),
+                ImVec2(plotPos.x + plotSize.x, plotPos.y + plotSize.y / 2),
+                IM_COL32(80, 80, 80, 255));  // Horizontal (I=0)
+
+            // Find where V=0 falls in the plot
+            float v0_x = plotPos.x + (-minV) / (maxV - minV + 0.001f) * plotSize.x;
+            if (v0_x > plotPos.x && v0_x < plotPos.x + plotSize.x) {
+                drawList->AddLine(
+                    ImVec2(v0_x, plotPos.y),
+                    ImVec2(v0_x, plotPos.y + plotSize.y),
+                    IM_COL32(80, 80, 80, 255));  // Vertical (V=0)
+            }
+
+            // Plot points and lines
+            for (int i = 0; i < ivPointCount; i++) {
+                float x = plotPos.x + (ivVoltages[i] - minV) / (maxV - minV + 0.001f) * plotSize.x;
+                float y = plotPos.y + plotSize.y - (ivCurrents[i] - minI) / (maxI - minI + 0.001f) * plotSize.y;
+
+                // Clamp to plot area
+                x = fmax(plotPos.x, fmin(x, plotPos.x + plotSize.x));
+                y = fmax(plotPos.y, fmin(y, plotPos.y + plotSize.y));
+
+                // Draw point
+                drawList->AddCircleFilled(ImVec2(x, y), 4.0f, IM_COL32(100, 255, 100, 255));
+
+                // Draw line to previous point
+                if (i > 0) {
+                    float px = plotPos.x + (ivVoltages[i - 1] - minV) / (maxV - minV + 0.001f) * plotSize.x;
+                    float py = plotPos.y + plotSize.y - (ivCurrents[i - 1] - minI) / (maxI - minI + 0.001f) * plotSize.y;
+                    px = fmax(plotPos.x, fmin(px, plotPos.x + plotSize.x));
+                    py = fmax(plotPos.y, fmin(py, plotPos.y + plotSize.y));
+                    drawList->AddLine(ImVec2(px, py), ImVec2(x, y), IM_COL32(100, 255, 100, 180), 2.0f);
+                }
+            }
+
+            // Border
+            drawList->AddRect(plotPos,
+                ImVec2(plotPos.x + plotSize.x, plotPos.y + plotSize.y),
+                IM_COL32(100, 100, 100, 255));
+
+            // Reserve space for the plot
+            ImGui::Dummy(plotSize);
+
+            // Axis labels
+            ImGui::Text("V: %.1f to %.1f V  |  I: %.1f to %.1f uA", minV, maxV, minI, maxI);
+
+            // Calculate and display resistance (Ohm's law: R = V/I)
+            if (ivPointCount >= 2) {
+                // Linear regression for resistance
+                float sumV = 0, sumI = 0, sumVI = 0, sumVV = 0;
+                for (int i = 0; i < ivPointCount; i++) {
+                    sumV += ivVoltages[i];
+                    sumI += ivCurrents[i];
+                    sumVI += ivVoltages[i] * ivCurrents[i];
+                    sumVV += ivVoltages[i] * ivVoltages[i];
+                }
+                float n = (float)ivPointCount;
+                float slope = (n * sumVI - sumV * sumI) / (n * sumVV - sumV * sumV + 0.001f);
+
+                if (abs(slope) > 0.001f) {
+                    float resistance = 1.0f / slope;  // MΩ (since current is in μA)
+                    ImGui::Text("Estimated Resistance: %.2f MOhm", resistance);
+                    ImGui::Text("Conductance: %.4f uS", slope);
+                }
+            }
+        }
+
+        ImGui::End();
+
         // ========== PHYSICS SIMULATION ==========
 
         // Use actual frame time, clamped to prevent instability
@@ -419,6 +569,31 @@ int main()
         if (actualDt > 0.05f) actualDt = 0.05f;  // Cap at 20 FPS minimum
         if (actualDt < 0.001f) actualDt = 0.001f;  // Floor at 1000 FPS
         float dt = actualDt * simulationSpeed;
+
+        // ===== I-V SWEEP LOGIC =====
+        if (ivSweepActive) {
+            ivSettleTime += actualDt;
+            appliedVoltage = ivSweepVoltage;
+
+            // Wait for system to settle, then record point
+            if (ivSettleTime >= IV_SETTLE_DURATION) {
+                if (ivPointCount < IV_MAX_POINTS) {
+                    ivVoltages[ivPointCount] = ivSweepVoltage;
+                    ivCurrents[ivPointCount] = currentMetric;
+                    ivPointCount++;
+                }
+
+                // Move to next voltage
+                ivSweepVoltage += ivSweepStep;
+                ivSettleTime = 0.0f;
+
+                // Check if sweep is complete
+                if (ivSweepVoltage > 10.0f) {
+                    ivSweepActive = false;
+                    appliedVoltage = 0.0f;
+                }
+            }
+        }
 
         float T_k = ROOM_TEMP + temperature * 50.0f;
         float kT_sim = T_k * BOLTZMANN_EV;
