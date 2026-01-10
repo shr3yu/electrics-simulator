@@ -56,13 +56,13 @@ const float HOLE_VSAT_NORM = 0.4f;
 const float DEVICE_LENGTH = 1.8f;  // From -0.9 to 0.9
 
 // Generation/Recombination rates - tuned for visual stability
-const float GENERATION_BASE = 0.0000005f;    // Base thermal generation rate (lowered more)
-const float GENERATION_TEMP_SCALE = 50.0f;   // Temperature sensitivity (steeper curve)
+const float GENERATION_BASE = 0.000008f;     // Base thermal generation rate
+const float GENERATION_TEMP_SCALE = 30.0f;   // Temperature sensitivity (lower = steeper exponential)
 
 // Recombination: uses Shockley-Read-Hall inspired model
-const float CARRIER_LIFETIME_BASE = 0.01f;   // Base recombination probability (increased)
-const float AUGER_COEFFICIENT = 0.000005f;   // High-injection Auger-like term (increased)
-const float RECOMBINATION_RADIUS = 0.15f;    // How close carriers must be to recombine
+const float CARRIER_LIFETIME_BASE = 0.003f;  // Base recombination probability (reduced)
+const float AUGER_COEFFICIENT = 0.00001f;    // High-injection Auger-like term
+const float RECOMBINATION_RADIUS = 0.12f;    // How close carriers must be to recombine
 
 const unsigned int SCR_WIDTH = 1200;
 const unsigned int SCR_HEIGHT = 800;
@@ -356,7 +356,11 @@ int main()
 
         ImGui::Text("Temperature: %.0f K (%.1f C)", T_kelvin, T_kelvin - 273.15f);
         ImGui::Text("Thermal Energy kT: %.4f eV", kT);
-        ImGui::Text("Electric Field: %.2f V/cm", appliedVoltage / (DEVICE_LENGTH * 1e-4f));
+
+        // Electric field in simulation: V / L where L = 1.8 (simulation units)
+        // For display, assume device is ~1 micrometer (1e-4 cm)
+        float E_display = appliedVoltage / 1e-4f;  // V/cm for a 1 micron device
+        ImGui::Text("Electric Field: %.1f V/cm", E_display);
 
         float mu_e = calculatePhysicalMobility(true, T_kelvin);
         float mu_h = calculatePhysicalMobility(false, T_kelvin);
@@ -410,7 +414,12 @@ int main()
 
         // ========== PHYSICS SIMULATION ==========
 
-        float dt = 0.016f * simulationSpeed;  // ~60fps timestep
+        // Use actual frame time, clamped to prevent instability
+        float actualDt = ImGui::GetIO().DeltaTime;
+        if (actualDt > 0.05f) actualDt = 0.05f;  // Cap at 20 FPS minimum
+        if (actualDt < 0.001f) actualDt = 0.001f;  // Floor at 1000 FPS
+        float dt = actualDt * simulationSpeed;
+
         float T_k = ROOM_TEMP + temperature * 50.0f;
         float kT_sim = T_k * BOLTZMANN_EV;
 
@@ -517,24 +526,25 @@ int main()
 
                 // ----- DIFFUSION: Carriers move from high to low concentration -----
                 vec2 gradient = calculateDensityGradient(p.position, particles, p.isElectron);
-                float diffCoeff = kT_sim * mobility * 0.5f;  // Einstein relation (scaled)
+                float diffCoeff = kT_sim * mobility * 2.0f;  // Einstein relation (boosted for visibility)
 
                 vec2 diffusionVel = { 0.0f, 0.0f };
-                if (length(gradient) > 0.1f) {
+                if (length(gradient) > 0.05f) {
                     // Move against gradient (from high to low concentration)
-                    diffusionVel = normalize(gradient) * (-diffCoeff);
+                    diffusionVel = normalize(gradient) * (-diffCoeff * 0.5f);
                 }
 
                 // ----- THERMAL RANDOM WALK -----
-                float thermalSpeed = sqrt(kT_sim) * 0.02f;
+                float thermalSpeed = sqrt(kT_sim) * 0.08f;  // Boosted for visible diffusion
                 float rx = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
                 float ry = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
                 vec2 thermalKick = { rx * thermalSpeed, ry * thermalSpeed };
 
                 // Combine all velocity components
-                vec2 targetVel = { driftVelX, 0.0f };
-                targetVel += diffusionVel;
-                targetVel += thermalKick;
+                vec2 driftVel = { driftVelX, 0.0f };  // Pure drift from electric field
+                driftVel += diffusionVel;
+
+                vec2 targetVel = driftVel + thermalKick;
 
                 // Smooth velocity update (avoids jitter)
                 p.velocity += (targetVel - p.velocity) * 0.2f;
@@ -543,14 +553,9 @@ int main()
                 float oldX = p.position.x;
                 p.position += p.velocity * dt;
 
-                // Track current: charge crossing center plane
-                if ((oldX < 0.0f && p.position.x >= 0.0f) ||
-                    (oldX >= 0.0f && p.position.x < 0.0f)) {
-                    float chargeContribution = p.isElectron ? -1.0f : 1.0f;
-                    if (p.position.x > oldX) chargeContribution *= 1.0f;
-                    else chargeContribution *= -1.0f;
-                    currentAccumulator += chargeContribution;
-                }
+                // Track current: use only drift component (not thermal noise)
+                float chargeSign = p.isElectron ? -1.0f : 1.0f;
+                currentAccumulator += chargeSign * driftVel.x * 1000.0f;
 
                 // ----- BOUNDARY CONDITIONS -----
                 const float WALL_L = -0.9f, WALL_R = 0.9f;
@@ -594,13 +599,12 @@ int main()
             particles.end()
         );
 
-        // Update current measurement
-        measureTimer += 1.0f;
-        if (measureTimer >= MEASURE_INTERVAL) {
-            currentMetric = currentAccumulator * (1000.0f / MEASURE_INTERVAL);  // Scale to uA
-            currentAccumulator = 0.0f;
-            measureTimer = 0.0f;
-        }
+        // Update current measurement - smooth rolling average
+        // currentAccumulator now holds this frame's total current
+        // Blend it into the display value for smooth visualization
+        float instantCurrent = currentAccumulator;
+        currentMetric = currentMetric * 0.98f + instantCurrent * 0.02f;  // More smoothing
+        currentAccumulator = 0.0f;  // Reset each frame
 
         // ========== RENDERING ==========
 
