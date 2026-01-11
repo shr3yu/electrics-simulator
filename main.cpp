@@ -135,7 +135,6 @@ struct DopingIon {
 vector<DopingIon> dopingIons;
 
 // ---------- PARTICLE STRUCTURE ----------
-
 struct Particle {
     vec2 position;
     vec2 velocity;
@@ -186,6 +185,8 @@ float calculateMobilityWithDoping(bool isElectron, float T, float Ndoping) {
 
     // Empirical mobility reduction due to impurity scattering
     // μ = μ_min + (μ_max - μ_min) / (1 + (N/N_ref)^α)
+    // Values Obtained from "Carrier Mobilities in Silicon Empirically Related to Doping and Field"
+  
     float mu_min = isElectron ? 65.0f : 47.0f;
     float mu_max = mu_lattice;
     float N_ref = isElectron ? 8.5e16f : 6.3e16f;
@@ -1081,10 +1082,10 @@ int main()
             }
         }
 
-        // ===== CARRIER TRANSPORT =====
+        // ===== CARRIER TRANSPORT ALGORITHM =====
 
         for (Particle& p : particles) {
-            if (p.markedForDeletion) continue;
+            if (p.markedForDeletion) continue; 
 
             if (p.isFree) {
                 // Get mobility (includes doping effects)
