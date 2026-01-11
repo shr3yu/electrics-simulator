@@ -135,6 +135,7 @@ struct DopingIon {
 vector<DopingIon> dopingIons;
 
 // ---------- PARTICLE STRUCTURE ----------
+
 struct Particle {
     vec2 position;
     vec2 velocity;
@@ -185,8 +186,6 @@ float calculateMobilityWithDoping(bool isElectron, float T, float Ndoping) {
 
     // Empirical mobility reduction due to impurity scattering
     // μ = μ_min + (μ_max - μ_min) / (1 + (N/N_ref)^α)
-    // Values Obtained from "Carrier Mobilities in Silicon Empirically Related to Doping and Field"
-  
     float mu_min = isElectron ? 65.0f : 47.0f;
     float mu_max = mu_lattice;
     float N_ref = isElectron ? 8.5e16f : 6.3e16f;
@@ -469,13 +468,20 @@ void setupDoping(int mode, vector<DopingIon>& ions, vector<Particle>& particles,
     }
 }
 
-// Calculate density gradient for diffusion
-vec2 calculateDensityGradient(vec2 position, const vector<Particle>& particles,
+// Calculate density gradient and local density for diffusion
+// Returns: gradient vector (∇n) and local density (n) for proper diffusion: v = -D(∇n/n)
+struct DiffusionData {
+    vec2 gradient;      // ∇n - concentration gradient
+    float localDensity; // n - local carrier concentration
+};
+
+DiffusionData calculateDiffusionData(vec2 position, const vector<Particle>& particles,
     bool forElectrons) {
     const float SAMPLE_RADIUS = 0.25f;
 
     float leftDensity = 0.0f, rightDensity = 0.0f;
     float upDensity = 0.0f, downDensity = 0.0f;
+    float totalDensity = 0.0f;
 
     for (const Particle& p : particles) {
         if (!p.isFree || p.isElectron != forElectrons || p.markedForDeletion) continue;
@@ -485,6 +491,7 @@ vec2 calculateDensityGradient(vec2 position, const vector<Particle>& particles,
 
         if (dist < SAMPLE_RADIUS && dist > 0.01f) {
             float weight = 1.0f - (dist / SAMPLE_RADIUS);
+            totalDensity += weight;
 
             if (diff.x > 0) rightDensity += weight;
             else leftDensity += weight;
@@ -494,7 +501,11 @@ vec2 calculateDensityGradient(vec2 position, const vector<Particle>& particles,
         }
     }
 
-    return { rightDensity - leftDensity, upDensity - downDensity };
+    DiffusionData data;
+    data.gradient = { rightDensity - leftDensity, upDensity - downDensity };
+    data.localDensity = totalDensity + 0.1f;  // Add small value to prevent division by zero
+
+    return data;
 }
 
 // Find recombination partner
@@ -1082,10 +1093,10 @@ int main()
             }
         }
 
-        // ===== CARRIER TRANSPORT ALGORITHM =====
+        // ===== CARRIER TRANSPORT =====
 
         for (Particle& p : particles) {
-            if (p.markedForDeletion) continue; 
+            if (p.markedForDeletion) continue;
 
             if (p.isFree) {
                 // Get mobility (includes doping effects)
@@ -1102,28 +1113,50 @@ int main()
                 // Scale field to simulation
                 float E_sim_x = E_field.x * 1e-5f;  // Scale down for visualization
                 float E_sim_y = E_field.y * 1e-5f;
+                float E_magnitude = sqrt(E_sim_x * E_sim_x + E_sim_y * E_sim_y);
 
-                // Drift velocity: v = μE (with sign for charge)
+                // Drift velocity with HIGH-FIELD CAUGHEY-THOMAS MODEL
+                // v = μE / (1 + μE/vsat) - smooth saturation instead of hard clamp
                 float charge = p.isElectron ? -1.0f : 1.0f;
-                float driftVelX = mu_sim * E_sim_x * charge;
-                float driftVelY = mu_sim * E_sim_y * charge;
-
-                // Velocity saturation
-                float v_drift_mag = sqrt(driftVelX * driftVelX + driftVelY * driftVelY);
                 float vsat_sim = (p.isElectron ? VSAT_ELECTRON : VSAT_HOLE) * 1e-10f;
-                if (v_drift_mag > vsat_sim) {
-                    float scale = vsat_sim / v_drift_mag;
-                    driftVelX *= scale;
-                    driftVelY *= scale;
+
+                float driftVelX, driftVelY;
+                if (E_magnitude > 1e-10f) {
+                    // Caughey-Thomas: v = μE / (1 + μE/vsat)
+                    float muE = mu_sim * E_magnitude;
+                    float v_magnitude = muE / (1.0f + muE / vsat_sim);
+
+                    // Apply direction and charge sign
+                    float E_norm_x = E_sim_x / E_magnitude;
+                    float E_norm_y = E_sim_y / E_magnitude;
+                    driftVelX = v_magnitude * E_norm_x * charge;
+                    driftVelY = v_magnitude * E_norm_y * charge;
+                }
+                else {
+                    driftVelX = 0.0f;
+                    driftVelY = 0.0f;
                 }
 
-                // Diffusion
-                vec2 gradient = calculateDensityGradient(p.position, particles, p.isElectron);
-                float D_sim = kT_eV * mu_sim * 0.5f;  // Einstein relation
+                // Diffusion: v = -D × (∇n / n)
+                // Carriers move from high concentration to low concentration
+                DiffusionData diffData = calculateDiffusionData(p.position, particles, p.isElectron);
+                float D_sim = kT_eV * mu_sim * 0.5f;  // Einstein relation: D = (kT/q) × μ
 
                 vec2 diffusionVel = { 0.0f, 0.0f };
-                if (length(gradient) > 0.05f) {
-                    diffusionVel = normalize(gradient) * (-D_sim);
+                float gradientMag = length(diffData.gradient);
+                if (gradientMag > 0.05f && diffData.localDensity > 0.1f) {
+                    // v = -D × (∇n / n)
+                    // Negative sign: move against gradient (high → low concentration)
+                    diffusionVel.x = -D_sim * (diffData.gradient.x / diffData.localDensity);
+                    diffusionVel.y = -D_sim * (diffData.gradient.y / diffData.localDensity);
+
+                    // Clamp to prevent instability
+                    float maxDiffVel = 0.1f;
+                    float diffVelMag = length(diffusionVel);
+                    if (diffVelMag > maxDiffVel) {
+                        diffusionVel.x *= maxDiffVel / diffVelMag;
+                        diffusionVel.y *= maxDiffVel / diffVelMag;
+                    }
                 }
 
                 // Thermal random walk
