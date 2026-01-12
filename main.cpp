@@ -123,8 +123,15 @@ const float IV_SETTLE_DURATION = 0.5f;
 
 // Doping configuration
 int dopingMode = 0;                       // 0=intrinsic, 1=n-type, 2=p-type, 3=pn junction
-float dopingConcentration = 1.0e16f;      // cm^-3 (real doping level)
+float dopingConcentration = 1.0e16f;      // cm^-3 (for n-type and p-type modes)
 float displayDopingLog = 16.0f;           // For slider: log10 of doping
+
+// Separate Na and Nd for asymmetric P-N junction
+float Na_concentration = 1.0e16f;         // Acceptor concentration (P-side)
+float Nd_concentration = 1.0e16f;         // Donor concentration (N-side)
+float displayNaLog = 16.0f;               // For slider: log10 of Na
+float displayNdLog = 16.0f;               // For slider: log10 of Nd
+
 const float PN_JUNCTION_POS = 0.0f;
 
 // Fixed ions for doping visualization
@@ -166,11 +173,23 @@ float calculateIntrinsicConcentration(float T) {
     float Eg = calculateBandgap(T);
     float kT = BOLTZMANN_EV * T;
 
+    // Prevent division by zero or very small kT
+    if (kT < 0.001f) kT = 0.001f;
+
     // Nc and Nv scale as T^(3/2)
     float Nc = NC_300K * pow(T / 300.0f, 1.5f);
     float Nv = NV_300K * pow(T / 300.0f, 1.5f);
 
-    return sqrt(Nc * Nv) * exp(-Eg / (2.0f * kT));
+    // Calculate sqrt(Nc) * sqrt(Nv) separately to avoid overflow
+    float sqrt_Nc = sqrt(Nc);
+    float sqrt_Nv = sqrt(Nv);
+
+    // Clamp the exponent to prevent overflow/underflow
+    float exponent = -Eg / (2.0f * kT);
+    if (exponent < -50.0f) exponent = -50.0f;  // exp(-50) ≈ 0
+    if (exponent > 50.0f) exponent = 50.0f;    // exp(50) is huge but finite
+
+    return sqrt_Nc * sqrt_Nv * exp(exponent);
 }
 
 // Temperature-dependent mobility (lattice scattering)
@@ -194,13 +213,11 @@ float calculateMobilityWithDoping(bool isElectron, float T, float Ndoping) {
     return mu_min + (mu_max - mu_min) / (1.0f + pow(Ndoping / N_ref, alpha));
 }
 
-// Field-dependent mobility (velocity saturation)
-float calculateFieldDependentVelocity(float E, bool isElectron, float mu) {
-    float vsat = isElectron ? VSAT_ELECTRON : VSAT_HOLE;
-    float E_crit = vsat / mu;
-
+// Field-dependent velocity (Caughey-Thomas high-field model)
+// v = μE / (1 + μE/vsat)
+// This gives v → vsat as E → ∞ (smooth saturation)
+float calculateFieldDependentVelocity(float E, bool isElectron, float mu, float vsat) {
     // Caughey-Thomas model: v = μE / (1 + (μE/vsat))
-    // This gives v → vsat as E → ∞
     float muE = mu * fabs(E);
     return muE / (1.0f + muE / vsat);
 }
@@ -240,11 +257,17 @@ void calculateDepletionWidths(float T, float Na, float Nd, float V_applied,
 }
 
 // Electric field in depletion region (triangular approximation)
-// Maximum field at junction: E_max = q * Na * xp / ε = q * Nd * xn / ε
+// Maximum field at junction: E_max = q * Nd * xn / ε
+// Can be called with pre-calculated xn to avoid redundant depletion width calculation
+float calculateMaxDepletionFieldFromXn(float Nd, float xn) {
+    return Q_ELECTRON * Nd * xn / EPSILON_SILICON;
+}
+
+// Maximum field at junction (convenience function that calculates xn internally)
 float calculateMaxDepletionField(float T, float Na, float Nd, float V_applied) {
     float xp, xn;
     calculateDepletionWidths(T, Na, Nd, V_applied, xp, xn);
-    return Q_ELECTRON * Nd * xn / EPSILON_SILICON;
+    return calculateMaxDepletionFieldFromXn(Nd, xn);
 }
 
 // SRH recombination rate
@@ -323,17 +346,19 @@ vec2 calculateLocalField(vec2 position, float appliedV, float T,
             float xp, xn;
             calculateDepletionWidths(T, Na, Nd, appliedV, xp, xn);
 
-            // Electric field in depletion region (linear variation)
+            // Electric field in depletion region (linear/triangular variation)
             if (x_cm > -xp && x_cm < xn) {
-                // Inside depletion region
-                float E_max = Q_ELECTRON * Na * xp / EPSILON_SILICON;
+                // Use optimized function - pass xn directly, no redundant calculation
+                float E_max = calculateMaxDepletionFieldFromXn(Nd, xn);
 
                 if (x_cm < 0) {
                     // P-side of depletion: field increases toward junction
+                    // E(x) = E_max * (1 + x/xp) for x in [-xp, 0]
                     field.x += -E_max * (1.0f + x_cm / xp);
                 }
                 else {
                     // N-side of depletion: field decreases away from junction
+                    // E(x) = E_max * (1 - x/xn) for x in [0, xn]
                     field.x += -E_max * (1.0f - x_cm / xn);
                 }
             }
@@ -465,6 +490,89 @@ void setupDoping(int mode, vector<DopingIon>& ions, vector<Particle>& particles,
             e.markedForDeletion = false;
             particles.push_back(e);
         }
+    }
+}
+
+// Setup P-N Junction with separate Na and Nd (asymmetric doping)
+void setupDopingPN(vector<DopingIon>& ions, vector<Particle>& particles,
+    float Na, float Nd, float T) {
+    ions.clear();
+
+    // Remove free carriers from previous configuration
+    particles.erase(
+        remove_if(particles.begin(), particles.end(),
+            [](const Particle& p) { return p.isFree; }),
+        particles.end()
+    );
+
+    float ni = calculateIntrinsicConcentration(T);
+
+    // Calculate depletion region with asymmetric doping
+    float xp, xn;
+    calculateDepletionWidths(T, Na, Nd, 0.0f, xp, xn);
+    float xp_sim = xp * CM_TO_SIM;
+    float xn_sim = xn * CM_TO_SIM;
+
+    // Number of visual ions scaled by doping (more doping = more ions)
+    int numIonsP = (int)(log10(Na) * 8);
+    int numIonsN = (int)(log10(Nd) * 8);
+    if (numIonsP < 20) numIonsP = 20;
+    if (numIonsN < 20) numIonsN = 20;
+    if (numIonsP > 150) numIonsP = 150;
+    if (numIonsN > 150) numIonsN = 150;
+
+    // Number of free carriers based on doping ratio
+    float majorityRatioP = Na / ni;  // Holes on P-side
+    float majorityRatioN = Nd / ni;  // Electrons on N-side
+    int numHoles = (int)(log10(majorityRatioP) * 15);
+    int numElectrons = (int)(log10(majorityRatioN) * 15);
+    if (numHoles < 10) numHoles = 10;
+    if (numElectrons < 10) numElectrons = 10;
+    if (numHoles > 200) numHoles = 200;
+    if (numElectrons > 200) numElectrons = 200;
+
+    // P-side (left): acceptor ions (negative)
+    for (int i = 0; i < numIonsP; i++) {
+        DopingIon ion;
+        ion.position.x = ((float)rand() / RAND_MAX) * 0.85f - 0.85f;
+        ion.position.y = ((float)rand() / RAND_MAX) * 1.5f - 0.75f;
+        ion.isPositive = false;  // Acceptors are negative
+        ions.push_back(ion);
+    }
+
+    // N-side (right): donor ions (positive)
+    for (int i = 0; i < numIonsN; i++) {
+        DopingIon ion;
+        ion.position.x = ((float)rand() / RAND_MAX) * 0.85f;
+        ion.position.y = ((float)rand() / RAND_MAX) * 1.5f - 0.75f;
+        ion.isPositive = true;  // Donors are positive
+        ions.push_back(ion);
+    }
+
+    // Holes on P-side (outside depletion region)
+    for (int i = 0; i < numHoles; i++) {
+        Particle h;
+        h.position.x = -0.85f + ((float)rand() / RAND_MAX) * (0.85f - xp_sim - 0.1f);
+        h.position.y = ((float)rand() / RAND_MAX) * 1.5f - 0.75f;
+        h.homePosition = h.position;
+        h.velocity = { 0, 0 };
+        h.isFree = true;
+        h.isElectron = false;
+        h.markedForDeletion = false;
+        particles.push_back(h);
+    }
+
+    // Electrons on N-side (outside depletion region)
+    for (int i = 0; i < numElectrons; i++) {
+        Particle e;
+        e.position.x = xn_sim + 0.1f + ((float)rand() / RAND_MAX) * (0.85f - xn_sim - 0.1f);
+        e.position.y = ((float)rand() / RAND_MAX) * 1.5f - 0.75f;
+        e.homePosition = e.position;
+        e.velocity = { 0, 0 };
+        e.isFree = true;
+        e.isElectron = true;
+        e.markedForDeletion = false;
+        particles.push_back(e);
     }
 }
 
@@ -720,7 +828,8 @@ int main()
         int prevDopingMode = dopingMode;
         ImGui::Combo("Device Type", &dopingMode, dopingModes, 4);
 
-        if (dopingMode > 0) {
+        if (dopingMode > 0 && dopingMode < 3) {
+            // N-type or P-type: single doping slider
             float prevLog = displayDopingLog;
             ImGui::SliderFloat("Doping (10^x cm-3)", &displayDopingLog, 14.0f, 18.0f);
             dopingConcentration = pow(10.0f, displayDopingLog);
@@ -732,6 +841,26 @@ int main()
                 ivPointCount = 0;
             }
         }
+        else if (dopingMode == 3) {
+            // P-N Junction: separate Na and Nd sliders
+            float prevNaLog = displayNaLog;
+            float prevNdLog = displayNdLog;
+
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "P-side (Acceptors):");
+            ImGui::SliderFloat("Na (10^x cm-3)", &displayNaLog, 14.0f, 18.0f);
+            Na_concentration = pow(10.0f, displayNaLog);
+            ImGui::Text("Na = %.2e cm^-3", Na_concentration);
+
+            ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "N-side (Donors):");
+            ImGui::SliderFloat("Nd (10^x cm-3)", &displayNdLog, 14.0f, 18.0f);
+            Nd_concentration = pow(10.0f, displayNdLog);
+            ImGui::Text("Nd = %.2e cm^-3", Nd_concentration);
+
+            if (dopingMode != prevDopingMode || displayNaLog != prevNaLog || displayNdLog != prevNdLog) {
+                setupDopingPN(dopingIons, particles, Na_concentration, Nd_concentration, temperature);
+                ivPointCount = 0;
+            }
+        }
         else if (dopingMode != prevDopingMode) {
             setupDoping(dopingMode, dopingIons, particles, dopingConcentration, temperature);
             ivPointCount = 0;
@@ -739,13 +868,13 @@ int main()
 
         // PN Junction specific info
         if (dopingMode == 3) {
-            float V_bi = calculateBuiltInPotential(temperature, dopingConcentration, dopingConcentration);
+            float V_bi = calculateBuiltInPotential(temperature, Na_concentration, Nd_concentration);
             float xp, xn;
-            calculateDepletionWidths(temperature, dopingConcentration, dopingConcentration,
+            calculateDepletionWidths(temperature, Na_concentration, Nd_concentration,
                 appliedVoltage, xp, xn);
             float W_total = xp + xn;
-            float E_max = calculateMaxDepletionField(temperature, dopingConcentration,
-                dopingConcentration, appliedVoltage);
+            float E_max = calculateMaxDepletionField(temperature, Na_concentration,
+                Nd_concentration, appliedVoltage);
 
             ImGui::Separator();
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "P-N Junction Properties:");
@@ -754,14 +883,19 @@ int main()
             ImGui::Text("  x_p = %.2e cm, x_n = %.2e cm", xp, xn);
             ImGui::Text("Max Depletion Field: %.2e V/cm", E_max);
 
-            // Theoretical diode current
-            float Area = DEVICE_LENGTH_CM * DEVICE_LENGTH_CM;  // Assume square cross-section
-            float I_theory = calculateDiodeCurrent(appliedVoltage, temperature,
-                dopingConcentration, dopingConcentration, Area);
-            ImGui::Text("Theoretical I: %.3e A", I_theory);
+            // Show which side has more depletion
+            if (xp > xn * 1.5f) {
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.5f, 1.0f), "  -> Depletion mostly in P-side (Na < Nd)");
+            }
+            else if (xn > xp * 1.5f) {
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.5f, 1.0f), "  -> Depletion mostly in N-side (Nd < Na)");
+            }
 
-            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "Left: P-type (acceptors)");
-            ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Right: N-type (donors)");
+            // Theoretical diode current
+            float Area = DEVICE_LENGTH_CM * DEVICE_LENGTH_CM;
+            float I_theory = calculateDiodeCurrent(appliedVoltage, temperature,
+                Na_concentration, Nd_concentration, Area);
+            ImGui::Text("Theoretical I: %.3e A", I_theory);
         }
 
         ImGui::Separator();
@@ -919,8 +1053,8 @@ int main()
 
             float ni_iv = calculateIntrinsicConcentration(temperature);
             float Area = DEVICE_LENGTH_CM * DEVICE_LENGTH_CM;
-            float Is = calculateDiodeCurrent(0.001f, temperature, dopingConcentration,
-                dopingConcentration, Area) / (exp(0.001f / (BOLTZMANN_EV * temperature)) - 1);
+            float Is = calculateDiodeCurrent(0.001f, temperature, Na_concentration,
+                Nd_concentration, Area) / (exp(0.001f / (BOLTZMANN_EV * temperature)) - 1);
             ImGui::Text("Saturation current Is: %.2e A", Is);
         }
 
@@ -967,11 +1101,25 @@ int main()
             }
         }
 
-        // ===== GENERATION =====
-        // Rate proportional to ni² (thermal generation)
-        // Normalized for simulation: more generation at higher T
-        float generationProb = 0.00001f * (ni / NI_300K) * (ni / NI_300K);
-        generationProb = fmin(generationProb, 0.001f);  // Cap it
+        // ===== GENERATION (SRH Model) =====
+        // 
+        // Real SRH Generation Rate:
+        //   G = nᵢ² / [τₚ(n + nᵢ) + τₙ(p + nᵢ)]
+        //
+        // Physical meaning: Thermal energy creates electron-hole pairs
+        // Rate depends on: temperature (via nᵢ), carrier lifetimes (τ), local concentrations
+        //
+        // For visualization, we use a simplified probability scaling based on nᵢ
+
+        // Use the REAL nᵢ (already temperature-dependent)
+        float ni_real = ni;
+
+        // Simplified generation probability that scales with temperature (via nᵢ)
+        // At 300K: ni ≈ 1.5e10, so (ni/NI_300K)² = 1
+        // At 400K: ni ≈ 1e12, so (ni/NI_300K)² ≈ 4400
+        float temp_factor = (ni_real / NI_300K);
+        float generationProb = 0.00001f * temp_factor * temp_factor;
+        generationProb = fmin(generationProb, 0.01f);
 
         bool canGenerate = (particles.size() < 5500) && (electronCount + holeCount < 400);
 
@@ -995,15 +1143,28 @@ int main()
             }
         }
 
-        // ===== RECOMBINATION =====
-        // SRH-inspired: probability depends on np product relative to ni²
-        float np_product = (float)(electronCount * holeCount);
-        float ni_sq_scaled = 100.0f;  // Scaled ni² for particle simulation
+        // ===== RECOMBINATION (SRH Model) =====
+        //
+        // Real SRH Recombination Rate:
+        //   R = (np - nᵢ²) / [τₚ(n + nᵢ) + τₙ(p + nᵢ)]
+        //
+        // Key physics:
+        //   - Recombination only when np > nᵢ² (excess carriers above equilibrium)
+        //   - (np - nᵢ²) is the "driving force" - how far from equilibrium
+        //
+        // For visualization, we use particle counts directly
 
+        // Scaled ni² for particle simulation (when we have ~10 particles each, np = 100 = ni_scaled²)
+        float ni_sq_scaled = 100.0f;
+        float np_product = (float)(electronCount * holeCount);
+
+        // SRH-inspired recombination: only recombine when np > ni²
         float recombProb = 0.0f;
         if (np_product > ni_sq_scaled) {
+            // Rate proportional to excess carriers
             recombProb = 0.002f * (np_product - ni_sq_scaled) / (np_product + ni_sq_scaled);
         }
+        recombProb = fmin(recombProb, 0.05f);
 
         float recombRadius = 0.15f;
 
@@ -1095,36 +1256,70 @@ int main()
 
         // ===== CARRIER TRANSPORT =====
 
+        // =====================================================
+        // VELOCITY SCALING PHILOSOPHY:
+        // 
+        // Real physics:
+        //   v_thermal ~ 10^7 cm/s (random, no net movement)
+        //   v_drift ~ μE ~ 1000 cm²/Vs × 10^4 V/cm = 10^7 cm/s (at high field)
+        //   v_drift ~ μE ~ 1000 cm²/Vs × 100 V/cm = 10^5 cm/s (typical)
+        //
+        // For visualization, we want:
+        //   - Visible thermal jitter (random motion always present)
+        //   - Visible drift when voltage applied (net movement)
+        //   - Drift should be slower than thermal at low fields
+        //   - Drift should dominate at high fields
+        //
+        // Screen is ~2 units wide, dt ~ 0.016s (60 FPS)
+        // To cross screen in ~5 seconds at max drift: v_max ~ 0.4/5 = 0.08 units/s
+        // To have visible jitter: v_thermal ~ 0.01-0.02 units/frame
+        // =====================================================
+
+        // Pre-calculate mobilities (same for all electrons / all holes)
+        float doping_for_mobility = dopingMode > 0 ? dopingConcentration : 1e10f;
+        float mu_electron = calculateMobilityWithDoping(true, temperature, doping_for_mobility);
+        float mu_hole = calculateMobilityWithDoping(false, temperature, doping_for_mobility);
+
+        // Mobility scaling: μ ~ 1000 cm²/Vs, we want μ_sim ~ 0.001 to get reasonable velocities
+        float mu_electron_sim = mu_electron * 1e-6f;
+        float mu_hole_sim = mu_hole * 1e-6f;
+
+        // Saturation velocity scaling
+        float vsat_electron_sim = VSAT_ELECTRON * 1e-7f;
+        float vsat_hole_sim = VSAT_HOLE * 1e-7f;
+
         for (Particle& p : particles) {
             if (p.markedForDeletion) continue;
 
             if (p.isFree) {
-                // Get mobility (includes doping effects)
-                float mu = calculateMobilityWithDoping(p.isElectron, temperature,
-                    dopingMode > 0 ? dopingConcentration : 1e10f);
-
-                // Scale mobility to simulation units
-                float mu_sim = mu * 1e-8f;  // Scaled for visual movement
+                // Use pre-calculated mobility
+                float mu_sim = p.isElectron ? mu_electron_sim : mu_hole_sim;
+                float vsat_sim = p.isElectron ? vsat_electron_sim : vsat_hole_sim;
 
                 // Calculate local electric field
+                // Use Na/Nd for P-N junction, dopingConcentration for uniform doping
+                float Na_for_field = (dopingMode == 3) ? Na_concentration : dopingConcentration;
+                float Nd_for_field = (dopingMode == 3) ? Nd_concentration : dopingConcentration;
                 vec2 E_field = calculateLocalField(p.position, appliedVoltage, temperature,
-                    dopingConcentration, dopingConcentration, dopingMode);
+                    Na_for_field, Nd_for_field, dopingMode);
 
                 // Scale field to simulation
-                float E_sim_x = E_field.x * 1e-5f;  // Scale down for visualization
-                float E_sim_y = E_field.y * 1e-5f;
+                // E_field is in V/cm, at 5V across 0.01cm device = 500 V/cm
+                // We want E_sim to give v_drift ~ 0.01-0.1 units/frame at max field
+                float E_scale = 1e-4f;  // Balanced for visible but not overpowering drift
+                float E_sim_x = E_field.x * E_scale;
+                float E_sim_y = E_field.y * E_scale;
                 float E_magnitude = sqrt(E_sim_x * E_sim_x + E_sim_y * E_sim_y);
 
                 // Drift velocity with HIGH-FIELD CAUGHEY-THOMAS MODEL
                 // v = μE / (1 + μE/vsat) - smooth saturation instead of hard clamp
                 float charge = p.isElectron ? -1.0f : 1.0f;
-                float vsat_sim = (p.isElectron ? VSAT_ELECTRON : VSAT_HOLE) * 1e-10f;
+                // vsat_sim is pre-calculated outside the loop
 
                 float driftVelX, driftVelY;
                 if (E_magnitude > 1e-10f) {
-                    // Caughey-Thomas: v = μE / (1 + μE/vsat)
-                    float muE = mu_sim * E_magnitude;
-                    float v_magnitude = muE / (1.0f + muE / vsat_sim);
+                    // Use the Caughey-Thomas function for velocity saturation
+                    float v_magnitude = calculateFieldDependentVelocity(E_magnitude, p.isElectron, mu_sim, vsat_sim);
 
                     // Apply direction and charge sign
                     float E_norm_x = E_sim_x / E_magnitude;
@@ -1150,8 +1345,8 @@ int main()
                     diffusionVel.x = -D_sim * (diffData.gradient.x / diffData.localDensity);
                     diffusionVel.y = -D_sim * (diffData.gradient.y / diffData.localDensity);
 
-                    // Clamp to prevent instability
-                    float maxDiffVel = 0.1f;
+                    // Clamp to prevent instability but allow visible spreading
+                    float maxDiffVel = 0.02f;  // Reduced to not overpower thermal
                     float diffVelMag = length(diffusionVel);
                     if (diffVelMag > maxDiffVel) {
                         diffusionVel.x *= maxDiffVel / diffVelMag;
@@ -1160,7 +1355,10 @@ int main()
                 }
 
                 // Thermal random walk
-                float thermalSpeed = sqrt(kT_eV) * 0.03f;
+                // This should always be visible as jittering
+                // At 300K, kT_eV ~ 0.026, sqrt(0.026) ~ 0.16
+                // We want thermal kick ~ 0.005-0.01 per frame for visible jitter
+                float thermalSpeed = sqrt(kT_eV) * 0.05f;  // Increased for visible jitter
                 float rx = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
                 float ry = ((float)rand() / RAND_MAX * 2.0f - 1.0f);
                 vec2 thermalKick = { rx * thermalSpeed, ry * thermalSpeed };
@@ -1317,8 +1515,8 @@ int main()
             // Draw depletion region boundaries for PN junction
             if (dopingMode == 3) {
                 float xp, xn;
-                calculateDepletionWidths(temperature, dopingConcentration,
-                    dopingConcentration, appliedVoltage, xp, xn);
+                calculateDepletionWidths(temperature, Na_concentration,
+                    Nd_concentration, appliedVoltage, xp, xn);
 
                 float xp_sim = xp * CM_TO_SIM;
                 float xn_sim = xn * CM_TO_SIM;
