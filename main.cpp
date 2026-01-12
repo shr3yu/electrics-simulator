@@ -1056,7 +1056,16 @@ int main()
         }
 
         // RECOMBINATION: Electron-hole pairs annihilate
+        // When above equilibrium, we need to ensure recombination actually happens
+        // even if carriers are spread out
+
+        // Dynamic recombination radius - larger when we need more recombination
         float recombRadius = 0.15f;
+        if (deviation > 5.0f) {
+            // Increase radius when above equilibrium to help carriers find each other
+            recombRadius = 0.15f + 0.02f * deviation;
+            if (recombRadius > 0.8f) recombRadius = 0.8f;  // Cap at reasonable value
+        }
 
         for (size_t i = 0; i < particles.size(); i++) {
             Particle& p = particles[i];
@@ -1073,6 +1082,40 @@ int main()
                     p.velocity = { 0.0f, 0.0f };
 
                     // Hole is deleted
+                    particles[holeIdx].markedForDeletion = true;
+                }
+            }
+        }
+
+        // FORCED RECOMBINATION when significantly above equilibrium
+        // This simulates the fact that in reality, carriers WILL eventually find each other
+        // We just speed it up for visualization when the system is far from equilibrium
+        if (deviation > 10.0f) {
+            // Find random electron-hole pairs and force them to recombine
+            int forcedRecombCount = (int)(deviation * 0.1f * dt);  // More when further from equilibrium
+
+            for (int f = 0; f < forcedRecombCount; f++) {
+                // Find a random free electron
+                int electronIdx = -1;
+                int holeIdx = -1;
+
+                // Collect indices of free electrons and holes
+                vector<int> electronIndices, holeIndices;
+                for (size_t i = 0; i < particles.size(); i++) {
+                    if (!particles[i].isFree || particles[i].markedForDeletion) continue;
+                    if (particles[i].isElectron) electronIndices.push_back((int)i);
+                    else holeIndices.push_back((int)i);
+                }
+
+                if (!electronIndices.empty() && !holeIndices.empty()) {
+                    electronIdx = electronIndices[rand() % electronIndices.size()];
+                    holeIdx = holeIndices[rand() % holeIndices.size()];
+
+                    // Force recombination
+                    particles[electronIdx].isFree = false;
+                    particles[electronIdx].position = particles[holeIdx].homePosition;
+                    particles[electronIdx].homePosition = particles[holeIdx].homePosition;
+                    particles[electronIdx].velocity = { 0.0f, 0.0f };
                     particles[holeIdx].markedForDeletion = true;
                 }
             }
