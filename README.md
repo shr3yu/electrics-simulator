@@ -3,7 +3,9 @@ A real-time, low-level C++ simulation of electron behavior in a semiconductor cr
 
 Refer Docs for more Info: https://docs.google.com/document/d/1PtdvExCiqH26lgM7H7UgSPyRn9OdLXuFwajHFDokj0U/edit?tab=t.0
 
-https://github.com/user-attachments/assets/82f124a5-2192-4ebb-8a93-31b052249b53
+
+https://github.com/user-attachments/assets/67e1e22f-8ecb-4140-aa48-77cb189d9614
+
 
 
 ## Overview
