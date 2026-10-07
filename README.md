@@ -1,6 +1,7 @@
 # Semiconductor Physics Simulator: Charge Carrier Dynamics
 A real-time, low-level C++ simulation of electron behavior in a semiconductor crystal lattice under varying electromagnetic and thermal conditions.
 
+A lot of the project revolved understanding physical fundamentals of the behaviour of electrons to craft an accurate simulation.
 Refer Docs for more Info: https://docs.google.com/document/d/1PtdvExCiqH26lgM7H7UgSPyRn9OdLXuFwajHFDokj0U/edit?tab=t.0
 
 
